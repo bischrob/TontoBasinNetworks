@@ -1,0 +1,482 @@
+---
+title: Material Culture Networks in Tonto Basin
+output:
+  bookdown::word_document2:
+    toc: true
+    number_sections: false
+    reference_docx: TF.docx
+  rticles::tf_article: null
+author:
+  - name: Robert J. Bischoff 1
+    affil: a
+    email: rbischoff@asu.edu
+affiliation:
+  - num: a
+    address: School of Human Evolution and Social Change, Arizona State University, Tempe, AZ
+keywords: |
+ American Southwest; network analysis; multilayer networks; Hohokam; projectile points; ceramics; computational archaeology; gender
+abstract: |
+  Tonto Basin is located in a border zone between the Hohokam, Mogollon, and Ancestral Pueblo regions and was primarily occupied during the Roosevelt phase (AD 1275-1325) and the Gila phase (AD 1325-1450). The Roosevelt phase is notable for the appearance of Salado pottery, which has been interpreted as evidence of Kayenta immigration into Tonto Basin and the beginning of the Salado phenomenon. Salado pottery production was widespread, with production often centered at the location of former immigrant enclaves. This study uses data from the Roosevelt Community Platform Mounds Study to analyze social relations through networks based on architecture, ceramics, projectile points, and site locations. The results show a strong correlation between projectile points and space, and differences in the ceramic and point networks suggest that different social processes, possibly relating to gender, influenced the structure of the networks. Sites in this study with roomblocks--associated with immigration--are highly central in the ceramic networks, but have low centrality in the point networks, indication differences in the networks and suggesting differences in the levels of social integration between the genders.
+bibliography: references2.bib
+link-citations: yes
+editor_options:
+  chunk_output_type: inline
+header-includes: |
+  \usepackage{hyperref}
+  \usepackage[utf8]{inputenc}
+  \def\tightlist{}
+  \def\UrlBreaks{\do\/\do-\do?}
+csl: american-antiquity.csl
+---
+
+```{r setup, echo = F}
+out.format <- knitr::opts_knit$get("out.format")
+options(knitr.table.format = "latex")
+knitr::opts_chunk$set(
+  echo = F,
+  message = FALSE,
+  warning = FALSE,
+  dpi = 450,
+  out.width = "100%"
+)
+```
+
+```{r load, include=FALSE}
+library(tidyverse,quietly = T)
+library(magrittr)
+library(Momocs,quietly = T)
+library(kableExtra)
+library(ggthemes, quietly = T)
+library(here)
+library(rio)
+library(igraph)
+library(ggnetwork)
+library(vegan)
+library(multinet)
+
+set.seed(1010)
+
+# library(ggimage)
+i_am("manuscript.Rmd")
+# keep track of figures and tables
+figs = 1
+tbls = 1
+set.seed(1010)
+
+# load data and remove sites with only one projectile point
+
+sites = import(here("data/TontoBasinNetworkSites.xlsx"),setclass = 'tibble') %>% 
+  ungroup() %>% 
+  filter(!ArchaMapName %in% c("AZ V:5:130 (ASM)","AZ U:4:009 (ASM)","AZ U:8:318 (ASM)","AZ V:5:121 (ASM)"))
+
+# data frame for network nodes
+nodes = sites %>%
+  select(ArchaMapName,Area,Architecture = architecture) %>% 
+  mutate(Architecture = case_when(str_detect(Architecture,"compound, platform mound")~"platform mound",str_detect(Architecture,"compound, roomblock")~"roomblock",TRUE~Architecture)) %>% 
+  rowid_to_column("id") %>% 
+  ungroup()
+
+# coords = outTonto$fac %>% 
+#   select(ArchaMapName,UTMEAST,UTMNORTH) %>% 
+#   distinct_all()
+# coords %>% export(here('data/siteCoords.xlsx'))
+coords = import(here('data/siteCoords.xlsx')) %>% 
+  inner_join(nodes) %>% 
+  arrange(id)
+CeramicData = rio::import(here("data/CeramicData.xlsx"),
+                          setclass='tibble')
+
+# number of types per site
+count = CeramicData %>% as.data.frame() %>%
+  group_by(ArchaMapName,SWSN_type) %>%
+  summarize(Count = sum(Count)) %>%
+  ungroup()
+table(count$ArchaMapName)
+ceramicDF = CeramicData %>% as.data.frame() %>%
+  group_by(ArchaMapName,SWSN_type) %>%
+  summarize(Count = sum(Count)) %>%
+  ungroup() %>%
+  inner_join(nodes %>% select(ArchaMapName,id)) %>% 
+  select(-ArchaMapName) %>% 
+  pivot_wider(names_from = SWSN_type, values_from = Count) %>%
+  column_to_rownames("id") %>% 
+  select(-`Type, Undifferentiated`)
+
+outTonto = readRDS(here("data/TontoNetworkOutlines.Rds"))
+
+outTonto$fac %<>% select(-id,-Area) %>% left_join(nodes)
+# outTonto %<>%
+# mutate(ArchaMapName = droplevels(ArchaMapName))
+# outTonto %>% saveRDS(here("data/TontoNetworkOutlines.Rds"))
+```
+
+```{r sessionInfo,eval=FALSE, include=FALSE}
+# display software information
+sessioninfo::session_info()
+```
+
+# Introduction {-}
+
+Tonto Basin holds great potential for archaeological research due to the large cultural resource management projects conducted in the region [@Ahlstrom1991-eb; @Ciolek-Torrello1994-ds; @Doelle1992-lu; @Rice1998-ku]. This analysis uses the available information from the Roosevelt Community Platform Mounds Study (RPMS), the largest of the studies [@Rice1998-ku], and builds on prior research [@Clark2001-ck; @Hill2015-at; @Huntley2016-em; @Lyons2003-yy; @Lyons2006-to; @Lyons2012-pr;  @Neuzil2008-zd; @Stark1998-mu; @Watts2013-ub] to combine data on architecture, ceramics, projectile points, and site locations to analyze the networks of social relations that existed in the past through networks based on these data. The primary question is to determine whether these data are correlated. Because spatial data is included, this would mean that near sites are more similar than distant sites in architecture, ceramics, and projectile points. A lack of correlation would indicate that factors other than distance are influencing the social networks. The results of the network analysis demonstrate a strong correlation between  projectile points and space. The differences in the ceramic and point networks indicate that different social processes, perhaps relating to gender, are affecting the structure of the network.
+
+Tonto Basin is located in east-central Arizona and features Tonto Creek flowing from the Mogollon Rim into the Salt River (figure `r figs`). The junction of the Salt River and Tonto Creek now forms Roosevelt Lake since the damming of the Salt River. It was the expansion of the dam that precipitated the RPMS and its related projects in the late 1980s-1990s. All of the artifacts/data from the RPMS project are hosted at Arizona State University, and the data in this study come exclusively from this project.
+
+```{r TontoBasinSites, fig.cap= 'Map of archaeology sites from the Roosevelt Platform Mounds Study in Tonto Basin. Groups use the original assignments.'}
+
+figs = figs + 1
+knitr::include_graphics(here("figures/TontoBasinSitesv3.png"))
+```
+
+Most of the occupation of the Tonto Basin, particularly the sites excavated during the project, date between AD 1275 and 1325, which corresponds to the Roosevelt Phase. The Roosevelt phase is notable for the appearance of Salado pottery. Moderate occupation continued into the Gila phase (AD 1325-1450), after which recognizable occupation ceased in the area until the historic period.
+
+One aspect of Tonto Basin that has caught the attention of many researchers is its location in a border zone between the Hohokam, Mogollon, and Ancestral Pueblo regions. Of particular note is the presence of masonry roomblock architecture and pottery uncharacteristic of the local Hohokam traditions, which has been interpreted as Kayenta immigration into Tonto Basin and the beginning of the Salado phenomenon [@Clark2001-ck; @Lyons2003-yy; @Lyons2006-to; @Stark1998-mu]. Salado pottery production was widespread, but often the largest sources of production was centered at the location of a former Kayenta enclave [@Hill2015-at; @Huntley2016-em; @Lyons2012-pr; @Neuzil2008-zd].
+
+Ideally, studying social relations would be approached at the individual level, but rarely can archaeologists address archaeological data with that level of specificity. Watts [-@Watts2013-ub] used projectile points from Tonto Basin in just such a study, however. His study of flake scar patterning identified individual knappers, or at least clusters of knappers with similar knapping styles, and the distribution of their projectile points around Tonto Basin. He found strong connections between many parts of the eastern Tonto Basin.
+
+One way to examine individuals who make similar types of projectile points--and similar types of pottery for that matter--is to talk about identity. Identity can be a troubling topic for anthropologists. There are numerous meanings given to it and numerous scales at which it applies [@Brubaker2000-na], but Peeples [-@Peeples2018-ib] has introduced archaeologists to a more practical approach that is useful here. This approach views identity as existing along two axes: one categorical and the other relational. Relational identification is the process of identifying with someone due to frequent interaction. Categorical identification is the process of identifying with someone because you belong to a recognized social group. For example, members of the same moiety would share a categorical identity. They would likely also share a relational identity if they frequently interacted. These identities can be reflected in material culture. Pottery makes a good example. A potter can produce large, black and red chevrons on a pot that everyone who sees it can associate with a particular social group. Members of that group may wish to use that pottery as well as those who wish to curry favor with that group. Others may avoid that pottery. This pottery would be a marker of categorical identity. Relational identity can be seen in the way the potter prepares the clay recipe and smooths the coils. The particulars of these actions would be learned from close interaction with a teacher or other potters. In this way, relational identity can be compared to communities of practice [@Lave1991-ik; @Wenger1998-rx]. 
+
+In this analysis, I argue that ceramics and architecture are more likely to represent categorical identity. The architecture discussed is highly visible and representative of historical group membership. The ceramics are grouped into types based primarily on decoration, which is strongly indicative of group membership [see @Clark2001-ck for a discussion on material culture and its relationship to identity]. Projectile points can in some cases indicate group membership, but in this case the triangular and side-notched points were likely used for different purposes [see @Loendorf2015-ww]. Styles were difficult to determine for the original researchers, and I had the same difficulty. In my opinion, the subtle differences between projectile point outlines are more representative of interactions between knappers than markers of group identity for this particular case. There are no environmental reasons to assume differences in projectile points. Each hunter would have been using the points for the same game.
+
+Another way that people identify themselves is gender. Gender roles, like identity, can also vary, but for the purposes of this analysis I will use a simplified model. Women made pottery and men made projectile points. This was not always true of course, but it generally fits the ethnographic record in the Southwest. This does not mean that a man could not move pots from one site to another or that a woman could not do the same with a projectile point, but I will make the assumption that ceramic networks and point networks are gendered. Therefore differences in these networks represent different interactions between men's and women's networks.
+
+From this discussion, I expect the ceramic and point networks to differ in two ways. I expect the ceramic network to represent categorical identity among women, and I expect the point network to represent relational identity among men. This makes the networks somewhat more difficult to compare. Ideally, we would have networks of the same identity type, but it does provide the expectation that we should see significant differences in the networks.
+
+The presence of migrant communities in Tonto Basin invites questions regarding the relationship between sites--particularly between migrant and local communities. A network approach is an ideal way to examine the relationships between sites. Evidence that projectile points move between sites [@Watts2013-ub] indicates that this is also a productive line of analysis, and one that is less-commonly pursued compared to architecture and ceramics.
+
+# Network Analysis {-}
+
+Network approaches are best suited where the relationships between entities are of primary interest. In this case, I compare the similarity between sites using architecture, ceramics, and projectile points. Thus, a network can be defined using a site from Tonto Basin as a node and a type of similarity as a link (or edge) between the nodes. Similarity networks are a commonly used type of network in archaeology [e.g., @Birch2018-xx; @Borck2015-jy; @Cochrane2010-oa; @Golitko2015-we; @Lulewicz2019-lu; @Mills2013-wq; @Peeples2018-ib; @Terrell2010-hd]. These studies use a variety of artifacts and methods to construct their networks, but each has demonstrated the utility of network methods within archaeological contexts.
+
+Table `r tbls` 1 lists the `r nrow(sites)` sites with sufficient data to include in this study with the types of architecture present, periods occupied, and total number of ceramics and complete projectile points found at each site. The lack of complete projectile points at some sites is the largest caveat in this study, but complete points were necessary for the type of projectile point analysis used. The periods, architecture types, and ceramic types were assigned during the RPMS project and can be found in the project reports [@Rice1998-ku].
+
+```{r sites, echo=FALSE}
+tbls = tbls + 1
+cap = "Project Sites and Data"
+sites %>% 
+  select(Site = ArchaMapName,Area,Architecture = architecture,Phase,Ceramics,Points) %>% 
+knitr::kable(caption= cap, 
+             booktabs = T,
+             format.args = list(big.mark = ",",
+  scientific = FALSE)) %>% 
+  kable_styling(latex_options = "scale_down")
+```
+
+The types of similarity used in this study are varied depending on the type of network. One parameter that is consistent is how similar links should be in order to keep them. There is rarely a clear dividing line between similar and not similar. This can be a challenge for network analysis, because we can end up with networks where every node is connected to every other node. The decision to binarize a network--remove the weakest links and then cosider each link of equal value--has is drawbacks [@Peeples2013-tj], but is necessary in this case. A solution is to assign weights to each link that defines the strength of the tie. These networks are often difficult to visualize, and some network algorithms do not allow for weights. A common approach is to keep only the strongest ties by either ranking the ties or using a cutoff value. Part of this analysis is a visual approach and some of the methods require non-weighted links, thus I will be only using the strongest links. 
+
+I used ranked links to keep consistent values between networks. For example, a network could be made of the `r nrow(sites)` sites as nodes with each node being connected to the three sites that it has the strongest similarity to for ceramics, architecture, projectile points, and the three sites that it is physically closest to for the spatial network. In practice, not every node will have three connections. More than three ties can exist when the ties are tied in rank. Some nodes may not have three connections. And finally, because the network is not directed (meaning the ties indicate similarity in both directions) one node can have several ties pointing to it because that node was in the top three of multiple other nodes. In the latter case, this is a good indication of a central node in the network. Because I am using several types of networks, there is no common cutoff value I can use. Instead of arbitrarily picking one value, I have calculated each metric using networks composed of the top three to ten ties. Examining the range of these metrics provides a more robust analysis.
+
+Two network metrics are discussed in this analysis: eigenvector centrality and multilayer network correlation--the second will be discussed in the next section. Node centrality is a common way to quantify networks [@Borgatti2005-iz]. Centrality is a measure of the influence of the node on the network. Nodes with higher centrality generally derive or generate greater benefits from the network. Eigenvector centrality is one way to measure node centrality and is commonly used in archaeology. This metric describes how well a node is connected to the network as a whole and is helpful in comparing different networks containing the same nodes. Eigenvector centrality is also more robust to missing nodes than other measures [@Peeples2017-kl], a major problem in most archaeological studies. 
+
+## Multilayer Networks {-}
+
+A single network is typically used in network analyses, but multilayer networks can be more informative. Multilayer networks are layered networks where nodes have different types of connections [@Kivela2014-mh]. In this analysis, each network has the same nodes--each archaeological site--but different types of relationships between them. The combination of these individual networks is a multilayer network (also called a multiplex network). 
+
+Multilayer networks allow for methods to be applied on multiple networks at once [see @Brodka2018-vz]. The method applicable to this analysis is layer correlation. Either Pearson or Spearman rank correlation can be computed to determine the strength and direction of correlation between each layer. Bródka and colleagues [-@Brodka2018-vz] have provided an R package to compute these statistics, which I have used in this study. They recommend the Pearson correlation in most circumstances. I will display the results of the Pearson correlation, but the Spearman correlation provided similar results.
+
+```{r}
+# network functions 
+makeGraph = function(d, nLinks = NULL){
+  # igraph
+  g = graph_from_adjacency_matrix(d,mode = 'undirected',diag = F,weighted = T)
+  V(g)$name = nodes$id %>% as.character()
+  V(g)$ArchaMapName = nodes$ArchaMapName
+  V(g)$Area = nodes$Area
+  V(g)$Architecture = nodes$Architecture
+  V(g)$centrality = eigen_centrality(g, weights = E(g)$weight)$vector
+  
+  if(!is.null(nLinks)){
+    # calculate top n (with ties) edges and convert to igraph object
+    # convert to dataframe
+    n = igraph::as_data_frame(g)
+    n = bind_rows(n,n %>% rename(from = to, to = from))
+    n %<>% # sort data frame
+      arrange(from,desc(weight)) %>%
+      # rank by site
+      group_by(from) %>%
+      mutate(rank = rank(-weight)) %>% 
+      ungroup()
+    nSub = n %>% 
+      group_by(from) %>% 
+      slice_max(n = nLinks, order_by = desc(rank)) %>% 
+      ungroup()
+    
+    gRanks = graph_from_data_frame(nSub,directed = F, vertices = nodes)
+    gRanks %<>% simplify()
+    V(gRanks)$centrality = eigen_centrality(gRanks, weights = E(gRanks)$weight)$vector
+    return(gRanks)
+  } else {
+    return(g)
+  }
+}
+
+values2graphicsMod = function (values, output = "color", palette = "Paired") 
+{
+  if (!output %in% c("color", "shape")) {
+    stop("wrong parameter: output")
+  }
+  if (is.data.frame(values)) {
+    values <- values[[1]]
+  }
+  types <- as.factor(values)
+  num_types <- length(levels(types))
+  color_map = brewer.pal(num_types, palette)
+  color_map[types]
+  if ((output == "shape") & num_types > 5) {
+    warning("only 5 distinct shapes available: some shapes have been repeated")
+  }
+  l = vector("list")
+  l[["legend.text"]] = levels(types)
+  l[["legend.pch"]] = 21
+  if (output == "color") {
+    l[["legend.col"]] = color_map[1:num_types]
+    l[["color"]] = color_map[types]
+  }
+  if (output == "shape") {
+    l[["legend.pch"]] = ((1:num_types) - 1)%%5 + 21
+    l[["shape"]] = (as.numeric(types) - 1)%%5 + 21
+  }
+  l
+}
+
+dists = list()
+```
+
+
+```{r}
+# Spatial network
+d = dist(coords[,c("UTMEAST","UTMNORTH")]) %>% as.matrix
+colnames(d) = rownames(d) = coords$id
+# convert to scaled similarity (1 highest)
+d = 1 - (d / max(d))
+dists$spatial = d
+```
+
+## Spatial {-}
+
+The simplest network is the spatial network. This network was created by calculating the Euclidean distance from every site to every other site. This method is equivalent to proximal point analysis, which was used in one of the earliest network studies in archaeology [@Terrell1977-co] and continues to be used to study potential pathways of interaction [see @Broodbank2000-pg; @Collar2013-fb].
+
+## Architecture {-}
+
+```{r}
+# architecture network
+# convert to adjacency matrix
+tmp = sites %>% 
+  separate_rows(architecture, sep = ", ") %>% 
+  left_join(nodes %>% select(ArchaMapName,id))
+m = table(tmp$id,tmp$architecture) %>% as.matrix
+# calculate jaccard distance
+d = vegdist(m,method = "jaccard", na.rm = T) %>% as.matrix
+# convert to jaccard similarity
+d = 1-d
+dists$architecture = d
+```
+
+The architectural components consisted of compounds, roomblocks, and platform mounds. Some sites had pit houses from earlier occupations, but most excavation was focused on the Roosevelt and Gila phases so these few pit houses were removed from the analysis [see @Rice1998-ku]. Each site was classified as a platform mound if one was present regardless of other architecture or as a roomblock if a platform mound was not present regardless of other architecture. Thus, if a site is labeled a platform mound it may have other architecture. The network for architecture, and for the remaining networks, was created using the Jaccard similarity coefficient [@Jaccard1912-na] to determine the links between each site. This is a simple measure of similarity that does not take into account abundance. It was chosen due to the large differences in sample sizes between sites for the ceramics and projectile points and because count data were irrelevant or not readily available for the architectural data.
+
+## Ceramics {-}
+
+```{r}
+# ceramic stats
+# cdata = ceramicDF %>% rownames_to_column("sites") %>%  janitor::adorn_totals()
+# summary(cdata[16,-1] %>% unlist %>% as.integer)
+
+# ceramic network
+# convert to adjacency matrix
+m = ceramicDF %>% as.matrix
+# calculate jaccard distance
+d = vegdist(m,method = "jaccard", na.rm = T) %>% as.matrix
+# convert to jaccard similarity
+d = 1-d
+dists$ceramics = d
+```
+
+The ceramic network consists of 55 types--plainware and decorated--ranging from 181,666 Plain Brown Ware sherds to a single Black Mesa Black-on-white sherd. A single sherd is not much, but is still indicative of trade. However, the median sherd count was 157 for all types. The ceramic data was accessed from the cyberSW database [@Mills2020-tb], which keeps the full citations for the ceramic data.
+
+## Projectile Points {-}
+
+```{r}
+# projectile point network
+# convert to adjacency matrix
+m = table(outTonto$fac$id,outTonto$fac$pointCluster) %>% as.matrix
+# calculate jaccard distance
+d = vegdist(m,method = "jaccard") %>% as.matrix
+# convert to jaccard similarity
+d = 1-d
+dists$points = d
+```
+
+The ceramic and architectural data is available in suitable formats for analysis, but the original projectile point analysis was too general for the purposes of this study [see @Rice1994-rk for details]. Geometric morphometrics is a set of methods designed to quantitatively analyze shapes and is ideal for projectile point analysis. See Bischoff [-@Bischoff2022-rg] for details on geometric morphometrics and the methods used to analyze these projectile points. A geometric morphometric analysis was conducted on the 2D outlines of each complete triangular or side-notched projectile point. The majority of projectile points were triangular or side-notched. The few other points were likely curated points from earlier periods. Figures `r figs` and `r figs + 1` show the results of these analyses. These results were classified into closely related clusters and used in the same way as ceramic types.
+
+```{r TontoSideDistanceNetwork, fig.cap= 'Network graph displaying side-notched points from Tonto Basin as nodes with ties showing the morphometric distance between points. Darker colors represent stronger ties. Note that only the strongest 10\\% of ties are shown. From Bischoff (2022: Figure 14).'}
+figs = figs + 1
+knitr::include_graphics(here("figures/TontoSideDistanceNetwork.png"))
+```
+
+```{r TontoTriangularDistanceNetwork, fig.cap= 'Network graph displaying triangular points from Tonto Basin as nodes with ties showing the morphometric distance between points. Darker colors represent stronger ties. Note that only the strongest 10\\% of ties are shown. From Bischoff (2022: Figure 15).'}
+figs = figs + 1
+knitr::include_graphics(here("figures/TontoTriangularDistanceNetwork.png"))
+```
+
+# Results {-}
+
+```{r include=FALSE}
+corr = list()
+eigen = list()
+for (nLinks in 3:10){
+  print(nLinks)
+  net = ml_empty("Tonto")
+  g2List = list()
+  nms = names(dists)
+  for(n in nms){
+    print(n)
+    g = makeGraph(dists[[n]], nLinks = nLinks)
+    eigen[[paste0(nLinks,"-",n)]] = V(g)$centrality
+    g2List[[n]] = g
+    add_igraph_layer_ml(n = net, g = g,name = n)
+  }
+  
+  # layer_comparison_ml(net, method = "jaccard.edges", mode = "all") %>% 
+  # print
+  corr[[nLinks]] = layer_comparison_ml(net, method = "pearson.degree", mode = "all") %>% as.data.frame() %>% 
+    mutate(nLinks = nLinks)
+}
+
+corrDF = bind_rows(corr) %>% 
+  rownames_to_column("from") %>% 
+  pivot_longer(-c(from,nLinks), names_to = "to") %>% 
+  mutate(from = str_remove_all(from,"[^A-z]")) %>% 
+  mutate(nLinks = factor(as.character(nLinks))) %>% 
+  rowwise()  %>% 
+  filter(from != to) %>% 
+  mutate(id = paste(sort(c(from,to)),collapse = "->")) %>% 
+  select(-from,-to) %>% 
+  distinct_all()#%>% 
+# pivot_wider(names_from = nLinks)
+corrDF %>% 
+  ggplot(aes(x = value, y = id)) + 
+  geom_boxplot() +
+  theme_gdocs() +
+  xlab("Pearson correlation") +
+  ylab("Network comparison")
+# ggsave(here("figures/TontoNetworksCorrelation.png"),dpi = 450, width = 6.5, height = 4.5)
+# browseURL(here("figures/TontoNetworksCorrelation.png"))
+
+eigenDF = bind_rows(eigen) %>% 
+  rowid_to_column("id") %>% 
+  pivot_longer(-id) %>% 
+  left_join(nodes) %>% 
+  mutate(name = str_remove_all(name,"[^A-z]"),
+         id = factor(id))
+
+eigenDF %>% 
+  ggplot(aes(x = value, y = id, color = Architecture)) + 
+  geom_boxplot() +
+  theme_gdocs() + 
+  xlab("Eigenvector centrality") +
+  ylab("Site ID") +
+  guides(color = guide_legend(title = element_blank(), nrow = 1)) +
+  theme(legend.position = "bottom") +
+  facet_wrap(~name, scales = "free_x")
+# ggsave(here("figures/TontoNetworksEigenvector.png"),dpi = 450, width = 6.5, height = 8.5)
+# browseURL(here("figures/TontoNetworksEigenvector.png"))
+
+g2List = list()
+nms = names(dists)
+for(n in nms){
+  print(n)
+  g = makeGraph(dists[[n]], nLinks = 5)
+  eigen[[paste0(nLinks,"-",n)]] = V(g)$centrality
+  g2List[[n]] = g
+}
+
+netDF = map2_df(g2List,names(g2List),function(g,n){
+  ggnetwork(g) %>% mutate(layer = n)
+})
+
+ggplot(netDF,aes(x = x,y = y, xend = xend, yend = yend, shape = Architecture, color = Area, label = name, size = centrality)) +
+  geom_edges(color = "gray", size = .75) +
+  geom_nodes() +
+  geom_nodetext_repel(color = "black", size = 3) +
+  scale_shape_manual(values = 15:18) +
+  scale_color_brewer(palette = "Set1") +
+  scale_size_continuous(range = c(3,4.5)) +
+  facet_wrap(~layer) +
+  theme_blank() +
+  theme(panel.border = element_rect(fill = NA),
+        strip.background = element_rect(fill = "white"),
+        legend.position = "bottom") +
+  guides(size = "none", shape = guide_legend(ncol = 2,title = NULL), color = guide_legend(ncol = 2, title = NULL))
+# ggsave(here("figures/TontoNetworksMultiNet.png"),dpi = 450, width = 6.5, height = 8)
+# browseURL(here("figures/TontoNetworksMultiNet.png"))
+paste0(nodes$id,": ",nodes$ArchaMapName) %>% paste(collapse = "; ")
+meanEigenVals = eigenDF %>% 
+  filter(name %in% c("ceramics","points")) %>% 
+  group_by(Architecture,name) %>% 
+  summarize(value = round(mean(value),2)) %>% 
+  arrange(name) %>% 
+  pivot_wider(names_from = name, values_from = value)
+```
+
+Figure `r figs` shows the networks with the top five strongest ties between each node. This number of ties represents the fewest ties that connects all nodes in the spatial network. Fewer ties leaves the Cline Mesa sites disconnected from the rest of the network. Thus, Bass Point Mound forms a crucial bridge between the Cline Mesa sites and the rest of the network. The Rock Island area consists of a single site, Bass Point Mound, which was a platform mound, although it was not heavily excavated. If spatial distance was a primary driver in social interaction, then we would expect Bass Point Mound to consistently be a highly central node.
+
+```{r TontoNetworksMultiNet, fig.cap= 'Graphs showing the networks used in this analsyis. Each network is displayed with the five strongest ties between each node. Legend: 1: AZ U:3:128 (ASM); 2: AZ U:4:032 (ASM); 3: AZ V:5:119 (ASM); 4: Bass Point Mound; 5: Cline Terrace Mound, Monster Ruin; 6: Indian Point Complex; 7: Pinto Point Mound; 8: Saguaro Muerto; 9: Sand Dune Site; 10: Schoolhouse Point Mesa Complex; 11: Schoolhouse Point Mound'}
+figs = figs + 1
+knitr::include_graphics(here("figures/TontoNetworksMultiNet.png"))
+```
+
+I chose eigenvector as the centrality measure (see figure `r figs`), which you can see in the spatial eigenvector results poorly reflects the centrality of Bass Point Mound. Betweenness centrality would better capture how objects would have to flow through Bass Point Mound to get from the Cline Mesa sites to the other parts of the network, but this is not a road network. People could have simply walked around Bass Point Mound. What eigenvector centrality does indicate is whether it is connected to other strongly connected sites. This may not be important for a spatial network, but it is important for the other networks. Bass Point Mound's centrality is very low for architecture. It is the most central site for points based on eigenvector analysis and visual inspection and it is high for ceramics as well. This indicates a strong correlation with space and points, at least for the Bass Point Mound, and that Bass Point Mound was also important for Ceramic circulation (whether that is actual pots or the ideas of how to make pots). 
+
+```{r TontoNetworksEigenvector, fig.cap= 'Boxplots showing the eigenvector centrality for each network. Values were calculated using networks created using between 3 to 10 of the strongest ranking ties. Legend: 1: AZ U:3:128 (ASM); 2: AZ U:4:032 (ASM); 3: AZ V:5:119 (ASM); 4: Bass Point Mound; 5: Cline Terrace Mound, Monster Ruin; 6: Indian Point Complex; 7: Pinto Point Mound; 8: Saguaro Muerto; 9: Sand Dune Site; 10: Schoolhouse Point Mesa Complex; 11: Schoolhouse Point Mound.'}
+figs = figs + 1
+knitr::include_graphics(here("figures/TontoNetworksEigenvector.png"))
+```
+
+Bass Point Mound is not the only bridge node. Pinto Point Mound connects the platform mounds with the compounds in the architecture network. The reason for this is that the site also has a compound present. Similar to Bass Point Mound, eigenvector centrality does not favor bridge nodes, but Pinto Point Mound has the second highest centrality value for ceramics and the highest for spatial distance (meaning it is located near many other sites), and it has an above average centrality for points. This suggests architecture is an important component in the ceramic network and possibly in the point network. 
+
+Besides the two bridge nodes, visual inspection of the graphs provides several other observations. One is that the four geographic areas represented do not form strong components in the non-spatial networks like they do in the spatial network. The architecture is thoroughly mixed, and the ceramics and points form single component networks. This is typical of artifact similarity networks. The Livingston sites exhibit the most clustering in the ceramic network, although some of the connections go through Cline Mesa sites, which are as geographically distant as possible for these sites. The Schoolhouse Mesa sites always group together in the ceramic and point networks, as do the Livingston compound sites and separately the Livingston roomblock and platform mound. The Cline Mesa sites exhibit more variability.
+
+Another observation from the visual inspection of these networks is that there is some clustering due to architecture in the ceramic and point networks. Four of the five compound-only sites cluster at one end of the ceramic network, and a different mix of four out of five cluster together at one end of the projectile point network. The platform mounds are split in the ceramic network, but all cluster together in the projectile point network. Table `r tbls` shows the mean eigenvector centrality vectors for the ceramic and point networks by type of architecture. Surprisingly the platform mounds are the least central, on average, for the ceramic network, but they are the most central for the projectile point network. The roomblocks, on the hand, are the most central for the ceramic network and by far the least central in the projectile point network. They take a larger drop in centrality in the projectile point network than the platform mound sites do in the ceramic network. It is expected that roomblocks have high centrality in the ceramic network, but not that platform mounds should have the lowest centrality.
+
+```{r meanEigenVals}
+cap = "Mean Eigenvalues for Ceramic and Point Networks by Type of Architecture"
+meanEigenVals %>% 
+  knitr::kable(caption= cap, 
+             booktabs = T)
+```
+
+There is a chain of association between immigrants and roomblocks, roomblocks or locations with roomblocks as centers of Salado production, and Salado pottery as a widespread phenomenon that provides an expectation for roomblock sites to be central to pottery networks. This expectation is born out in this network analysis. Two of the platform mounds and three of the compound sites also have high centrality, demonstrating that ceramic circulation occurred between groups at sites with all types of architecture. What is clear from this analysis is that centrality in the ceramic network does not correlate with centrality in the point network.
+
+The visual analysis, combined with the eigenvector centrality, indicated some spatial and architectural correlation. The multilayer Pearson correlation provides a more direct way to compare these layers, as shown in figure `r figs`. This analysis provides a clear contrast between layers. Only one comparison had a strong correlation--the point and spatial networks were strongly correlated. The visual inspection and centrality analysis provided some indication of this, but the multilayer network comparison provides a clearer indication. All other layer comparisons had an approximately equivalent, positive correlation, but with only a week strength. The one exception was architecture and points where the correlation was approximately zero. The visual inspection and eigenvector analysis demonstrated some interesting interactions with architecture in the network, but the overall correlation demonstrates that architecture cannot be used to predict the presence of absence of network ties in the projectile point network. 
+
+```{r TontoNetworksCorrelation, fig.cap= 'Boxplots showing the Pearson correlation between each network. Values were calculated using networks created from 3 to 10 of the strongest ranking ties.'}
+figs = figs + 1
+knitr::include_graphics(here("figures/TontoNetworksCorrelation.png"))
+```
+
+# Discusssion {-}
+
+This analysis has three main findings regarding networks in Tonto Basin: (1) that point networks correlate with space; (2) that roomblock sites are highly central in the ceramic network and have low centrality in the point network; and (3) that ceramic and point networks are significantly different from each other. The purpose of this analysis is to understand something about the social relations in Tonto Basin. Presumably, these networks indicate something about how people interacted, and the ceramics and projectile points reveal something about the identity of those who made, used, and discarded them.
+
+As discussed previously, my simplistic model of interaction in Tonto Basin assumes that the ceramic network represents categorical identification among women. Recall also that I expected architecture to represent categorical identity. Thus, the correlation between architecture and ceramics, at least as represented by roomblocks, is an expected find and good corroborating evidence that these types of material culture represent markers of identity demonstrating belonging to a particular social group.
+
+The point networks were expected to represent relational identification among men. This is not always the case with projectile points. In some cases they can represent group identity [see @Wiessner1983-ei], but in this case there is little variation in style. Because relational identification is related to frequent interaction, spatial distance is a crucial component. It is much harder to interact with someone when they are far away. Thus, the correlation between the point and spatial networks also makes theoretical sense.
+
+The remaining question is whether the differences between the ceramic and projectile point networks are due to the differences in relational and categorical identification or are due to differences in behavior related to gender. I argue that in this case gender likely played an important role. It is most probable that potters were making the same types of pottery, rather than switching between styles. Not to say that potters were not making plain ware and decorated at the same time, but that they were not making radically different styles of decorated wares at the same time. Thus, the relational ceramic network likely follows the categorical network. This is however, an assumption that needs to be tested by examining sourcing data. The differences between the point and ceramic networks are large enough, that I am confident enough to hazard an opinion that these networks do represent gendered networks.
+
+# Conclusion {-}
+
+This analysis used architectural, ceramic, projectile point, and spatial data from `r nrow(sites)` sites in Tonto Basin, a region in central Arizona. The data come primarily from occupations between AD 1275 and 1325. A network was created for each type of data and combined into a multilayer network. Visual network analysis, eigenvector centrality, and multilayer network Pearson correlation was used to study and compare the networks. 
+
+The analysis found correlations between certain types of architecture and ceramic networks and between the point and spatial networks. These correlations are consistent with architecture and ceramics as markers of categorical identity--meaning these types of material culture were used as markers of belonging to a recognized social group. The correlation between projectile points and spatial location is also consistent with projectile point form as a marker of relational identity--meaning that the similarity between projectile points indicates frequent interaction. 
+
+Generally, projectile points were used in the Southwest by men in hunting and warfare. Women are most often associated with making and transporting pottery. I suggest that the large differences found between the point and ceramic networks indicate that men and women had different social networks in Tonto Basin. The large differences in centrality between the sites with roomblocks in the ceramic networks versus the point networks is also a possible indication of another social reality. If these networks are indeed gendered, then might immigrant women have been more socially connected than the men? Perhaps the simplest explanation is that male immigrants made projectile points they were more familiar with and felt no need to adapt to local customs, whereas the women felt greater pressure to integrate. Although it seems it was the immigrants' traditions that became the norm for pottery. One point that may support the idea of a lower level of integration among the men is the idea of gift giving or exchange of projectile points. Watt's [-@Watts2013-ub] analysis found that projectile points made by individuals were found throughout the eastern Tonto Basin, which supports the exchange of these items. There are several examples of the exchange of bows and arrows ethnographically throughout the world [e.g., @Mauss1966-nm; @Nishiaki2013-lc; @Wiessner1983-ei], in North America generally [e.g., @Hoffman1896-xl; @Radin1923-gf], and in the Southwest specifically [e.g., Beaglehole1936-ul; @Dittert1959-rz; @Fewkes1898-oj; @griffen1969a; @Parsons1939-xg; @Simpson1953-ob]. The frequent exchange of points would have increased the centrality of roomblock sites in the point networks. The fact that this did not happen may be an indication that male immigrant networks were not as well integrated as female networks centered around potters. Whichever is the case, this analysis demonstrates that multilayer network comparisons using different types of material culture is a profitable avenue of research and one that deserves further attention.
+
+# Acknowledgements {-}
+
+Josh Watts, Matt Peeples, Melissa Powell, Chris Caseldine, and several volunteers assisted with this research. The many individuals who contributed to the Roosevelt Platform Mound Study also deserve recognition.
+
+# Disclosure Statement {-}
+
+The author declares that no conflicts of interest exist in relation to the content of the article.
+
+# References {-}
